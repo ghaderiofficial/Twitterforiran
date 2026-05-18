@@ -1,4 +1,4 @@
-TOKEN = "8324724892:AAEMjvY3P7No9QpNRZ9Il2d5pdql8mTRj1g"
+TOKEN = "8324724892:AAEHue1lF28J35ZnuywBllcs8glWq_sloyI"
 
 CHANNEL = "@Twitterforiran"
 
