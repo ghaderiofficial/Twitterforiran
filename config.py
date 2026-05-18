@@ -1,0 +1,7 @@
+TOKEN = "8324724892:AAF0mUWNc-Jf1SSOQXWBQhgvpQnNnXEQJUo"
+
+CHANNEL = "@Twitterforiran"
+
+CHECK_INTERVAL = 600
+
+AD_TEXT = "📢 @Twitterforiran"
