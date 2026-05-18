@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import sqlite3
 import feedparser
 import aiohttp
 
@@ -8,14 +9,21 @@ from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
+    filters
 )
 
 from deep_translator import GoogleTranslator
 
-from config import TOKEN, CHANNEL, CHECK_INTERVAL
-from db import list_users, add, remove, seen, save
+
+# ================= CONFIG =================
+
+TOKEN = "توکن_ربات"
+CHANNEL = "@Twitterforiran"
+
+CHECK_INTERVAL = 120
+
+# ==========================================
 
 
 translator = GoogleTranslator(
@@ -23,54 +31,162 @@ translator = GoogleTranslator(
     target="fa"
 )
 
-START_MSG = "🚀 TwitterForIran Online"
+
+# ================= DATABASE =================
+
+db = sqlite3.connect(
+    "data.db",
+    check_same_thread=False
+)
+
+cur = db.cursor()
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users(
+    username TEXT PRIMARY KEY,
+    category TEXT
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS sent(
+    post_id TEXT PRIMARY KEY
+)
+""")
+
+db.commit()
 
 
-def tr(text):
+def add_user(username, category):
+
+    try:
+
+        cur.execute(
+            "INSERT OR IGNORE INTO users VALUES(?,?)",
+            (username, category)
+        )
+
+        db.commit()
+
+    except:
+        pass
+
+
+def remove_user(username):
+
+    cur.execute(
+        "DELETE FROM users WHERE username=?",
+        (username,)
+    )
+
+    db.commit()
+
+
+def get_users():
+
+    cur.execute(
+        "SELECT username, category FROM users"
+    )
+
+    return cur.fetchall()
+
+
+def seen(post_id):
+
+    cur.execute(
+        "SELECT post_id FROM sent WHERE post_id=?",
+        (post_id,)
+    )
+
+    return cur.fetchone()
+
+
+def save_post(post_id):
+
+    try:
+
+        cur.execute(
+            "INSERT INTO sent VALUES(?)",
+            (post_id,)
+        )
+
+        db.commit()
+
+    except:
+        pass
+
+
+# ================= DEFAULT USERS =================
+
+DEFAULT_USERS = [
+
+    ("elonmusk", "tech"),
+    ("realDonaldTrump", "politics"),
+    ("BarackObama", "politics"),
+    ("Cristiano", "sports"),
+    ("neymarjr", "sports"),
+    ("KMbappe", "sports"),
+    ("Reuters", "news"),
+    ("BBCWorld", "news"),
+    ("cnnbrk", "news"),
+    ("ethereum", "crypto"),
+    ("cz_binance", "crypto"),
+    ("VitalikButerin", "crypto"),
+]
+
+for u, c in DEFAULT_USERS:
+    add_user(u, c)
+
+
+# ================= HELPERS =================
+
+def translate(text):
+
     try:
         return translator.translate(text)
+
     except:
         return text
 
 
-def rss(user):
+def rss_url(user):
+
     return f"https://nitter.net/{user}/rss"
 
 
-async def fetch(session, url):
+async def fetch_feed(session, user):
+
     try:
-        async with session.get(url, timeout=20) as r:
-            return await r.text()
-    except:
-        return None
 
+        async with session.get(
+            rss_url(user),
+            timeout=20
+        ) as r:
 
-async def get_posts(session, user):
+            text = await r.text()
 
-    data = await fetch(
-        session,
-        rss(user)
-    )
+            return feedparser.parse(text).entries[:2]
 
-    if not data:
+    except Exception as e:
+
+        print("RSS ERROR:", e)
+
         return []
 
-    return feedparser.parse(data).entries[:2]
 
-
-async def send_post(app, item, user, category):
+async def send_post(app, item, username, category):
 
     if seen(item.id):
         return
 
-    save(item.id)
+    save_post(item.id)
 
     text = f"""
 🔥 {category.upper()}
 
-👤 @{user}
+👤 @{username}
 
-📝 {tr(item.title)}
+📝 {translate(item.title)}
 
 🔗 {item.link}
 
@@ -84,11 +200,14 @@ async def send_post(app, item, user, category):
             text=text
         )
 
-        print("POST SENT:", user)
+        print("POST:", username)
 
     except Exception as e:
+
         print("SEND ERROR:", e)
 
+
+# ================= WORKER =================
 
 async def worker(app):
 
@@ -96,28 +215,23 @@ async def worker(app):
 
         while True:
 
-            users = list_users()
+            users = get_users()
 
-            for user, category in users:
+            for username, category in users:
 
-                try:
+                posts = await fetch_feed(
+                    session,
+                    username
+                )
 
-                    posts = await get_posts(
-                        session,
-                        user
+                for item in posts:
+
+                    await send_post(
+                        app,
+                        item,
+                        username,
+                        category
                     )
-
-                    for item in posts:
-
-                        await send_post(
-                            app,
-                            item,
-                            user,
-                            category
-                        )
-
-                except Exception as e:
-                    print("FETCH ERROR:", e)
 
             await asyncio.sleep(
                 CHECK_INTERVAL
@@ -128,21 +242,31 @@ async def worker(app):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    await update.message.reply_text(
-        START_MSG
-    )
+    txt = """
+🚀 TwitterForIran Online
+
+دستورات:
+
+/status
+/list
+/add username category
+/del username
+/categories
+"""
+
+    await update.message.reply_text(txt)
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    users = len(list_users())
+    count = len(get_users())
 
     txt = f"""
-✅ Bot Online
+✅ ONLINE
 
-📡 Accounts: {users}
+📡 Accounts: {count}
 
-⏱ Check: {CHECK_INTERVAL}s
+⏱ Interval: {CHECK_INTERVAL}s
 
 📢 Channel: {CHANNEL}
 """
@@ -167,7 +291,7 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    users = list_users()
+    users = get_users()
 
     if not users:
 
@@ -179,9 +303,9 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     txt = "📡 Accounts:\n\n"
 
-    for user, cat in users:
+    for u, c in users:
 
-        txt += f"• @{user} → {cat}\n"
+        txt += f"• @{u} → {c}\n"
 
     await update.message.reply_text(txt)
 
@@ -190,13 +314,13 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        user = context.args[0]
+        username = context.args[0]
         category = context.args[1]
 
-        add(user, category)
+        add_user(username, category)
 
         await update.message.reply_text(
-            f"✅ Added @{user}"
+            f"✅ Added @{username}"
         )
 
     except:
@@ -210,12 +334,12 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        user = context.args[0]
+        username = context.args[0]
 
-        remove(user)
+        remove_user(username)
 
         await update.message.reply_text(
-            f"❌ Deleted @{user}"
+            f"❌ Deleted @{username}"
         )
 
     except:
@@ -225,34 +349,14 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    try:
-
-        msg = " ".join(context.args)
-
-        await context.bot.send_message(
-            chat_id=CHANNEL,
-            text=msg
-        )
-
-        await update.message.reply_text(
-            "✅ Sent"
-        )
-
-    except:
-
-        await update.message.reply_text(
-            "/broadcast text"
-        )
-
-
-async def normal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
-        "🤖 دستور نامعتبر"
+        "❓ دستور نامعتبر"
     )
 
+
+# ================= MAIN =================
 
 def main():
 
@@ -285,18 +389,17 @@ def main():
     )
 
     app.add_handler(
-        CommandHandler("broadcast", broadcast)
-    )
-
-    app.add_handler(
         MessageHandler(
             filters.TEXT,
-            normal
+            unknown
         )
     )
 
     def run_worker():
-        asyncio.run(worker(app))
+
+        asyncio.run(
+            worker(app)
+        )
 
     threading.Thread(
         target=run_worker,
@@ -306,7 +409,8 @@ def main():
     print("BOT STARTED")
 
     app.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        close_loop=False
     )
 
 
